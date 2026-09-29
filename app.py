@@ -13,14 +13,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PIL import Image
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QPixmap, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QLabel, QPushButton, QLineEdit, QListWidget, QComboBox, QSlider,
-    QProgressBar, QFileDialog, QMessageBox, QGroupBox,
+    QLabel, QPushButton, QLineEdit, QListWidget, QListWidgetItem, QComboBox,
+    QSlider, QProgressBar, QFileDialog, QMessageBox, QGroupBox,
 )
 
 import donate_engine as eng
+import donate_pro as proeng
 
 OUT_DIR = os.path.expanduser("~/workspace/your_files/donate-gifs")
 
@@ -75,13 +76,14 @@ class RenderWorker(QThread):
             kw = dict(self.kw)
             out_path = kw.pop("out_path", None)
             frames = kw.pop("frames", None)
+            engine = kw.pop("engine", eng)
             if frames is None:
                 def cb(i, n):
                     self.progress.emit(int(100 * i / max(1, n)))
                     return not self._cancel
 
                 kw["on_frame"] = cb
-                frames = eng.render_frames(**kw)
+                frames = engine.render_frames(**kw)
                 if frames is None or self._cancel:
                     return  # cancelled quietly
             if self.mode == "render":
@@ -145,15 +147,35 @@ class MainWindow(QMainWindow):
 
         v.addWidget(QLabel("افکت"))
         self.effect_list = QListWidget()
-        for _eid, fa, _n, _f in eng.EFFECTS:
+        self._effect_entries = []  # ("header", None) | ("classic"|"pro", eid)
+
+        def _add_header(text):
+            it = QListWidgetItem(text)
+            it.setFlags(Qt.NoItemFlags)
+            fnt = it.font()
+            fnt.setBold(True)
+            it.setFont(fnt)
+            it.setForeground(QColor("#9fd8c9"))
+            self.effect_list.addItem(it)
+            self._effect_entries.append(("header", None))
+
+        def _add_fx(kind, eid, fa):
             self.effect_list.addItem(fa)
-        self.effect_list.setCurrentRow(0)
+            self._effect_entries.append((kind, eid))
+
+        _add_header("━━ پک کلاسیک ━━")
+        for _eid, fa, _n, _f in eng.EFFECTS:
+            _add_fx("classic", _eid, fa)
+        _add_header("━━ پک حرفه‌ای ━━")
+        for _eid, fa, _n, _f in proeng.EFFECTS:
+            _add_fx("pro", _eid, fa)
+        self.effect_list.setCurrentRow(1)
         self.effect_list.currentRowChanged.connect(self._on_effect_changed)
         v.addWidget(self.effect_list)
 
         row2 = QHBoxLayout()
         self.size_combo = QComboBox()
-        self.size_combo.addItems(["240", "360", "480"])
+        self.size_combo.addItems(["240", "360", "480", "720×720", "1280×720"])
         self.size_combo.setCurrentText("480")
         self.fps_combo = QComboBox()
         self.fps_combo.addItems(["15", "24", "30"])
@@ -225,19 +247,41 @@ class MainWindow(QMainWindow):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
-        self._on_effect_changed(0)  # default fps per effect + default path
+        self._on_effect_changed(1)  # default fps per effect + default path
 
     # ---------------- params ----------------
 
+    def _effect_meta(self, kind, eid):
+        src = proeng.EFFECTS if kind == "pro" else eng.EFFECTS
+        for e in src:
+            if e[0] == eid:
+                return e
+        return None
+
     def _current_params(self):
         row = max(0, self.effect_list.currentRow())
-        eid = eng.EFFECTS[row][0]
+        kind, payload = self._effect_entries[row]
+        if kind == "header":  # shouldn't happen; fall back to first classic
+            kind, payload = "classic", eng.EFFECTS[0][0]
+        eid = payload
+        if kind == "pro":
+            engine = proeng
+            st = self.size_combo.currentText()
+            if "×" in st:
+                ww, hh = st.split("×")
+                size = (int(ww), int(hh))
+            else:
+                size = int(st)
+        else:
+            engine = eng
+            size = int(self.size_combo.currentText())
         return {
+            "engine": engine,
             "effect_id": eid,
             "avatar": self.avatar,
             "name": self.name_edit.text().strip(),
             "amount": self.amount_edit.text().strip(),
-            "size": int(self.size_combo.currentText()),
+            "size": size,
             "fps": int(self.fps_combo.currentText()),
             "seed": 11,
         }
@@ -247,13 +291,22 @@ class MainWindow(QMainWindow):
                 id(p["avatar"]))
 
     def _on_effect_changed(self, row):
-        if 0 <= row < len(eng.EFFECTS):
-            self.fps_combo.setCurrentText(str(eng.EFFECTS[row][3]))
+        if 0 <= row < len(self._effect_entries):
+            kind, payload = self._effect_entries[row]
+            if kind != "header":
+                meta = self._effect_meta(kind, payload)
+                if meta:
+                    self.fps_combo.setCurrentText(str(meta[3]))
+                    if kind == "pro":
+                        self.size_combo.setCurrentText("1280×720")
+                    else:
+                        self.size_combo.setCurrentText("480")
         self._refresh_default_path()
 
     def _refresh_default_path(self):
         row = max(0, self.effect_list.currentRow())
-        eid = eng.EFFECTS[row][0]
+        kind, payload = self._effect_entries[row]
+        eid = payload if kind != "header" else eng.EFFECTS[0][0]
         ts = time.strftime("%Y%m%d_%H%M%S")
         os.makedirs(OUT_DIR, exist_ok=True)
         self.path_edit.setText(
