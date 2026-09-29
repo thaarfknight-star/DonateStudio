@@ -1,0 +1,7 @@
+PySide6>=6.5,<7
+Pillow>=10.0
+numpy>=1.24
+# Optional fallback for Persian text shaping when the Pillow build lacks
+# libraqm (official Pillow wheels include raqm, so usually unneeded):
+# arabic_reshaper>=3.0
+# python-bidi>=0.4
